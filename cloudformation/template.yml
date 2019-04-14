@@ -1,0 +1,236 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Parameters:
+  projectName:
+    Type: String
+  snsSubscription:
+    Type: String
+  launchConfigImageId:
+    Type: String
+  eC2KeyPair:
+    Type: AWS::EC2::KeyPair::KeyName
+Resources:
+  iamRole1:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: "Allow"
+            Principal:
+              Service:
+                - "ec2.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Path: "/"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonEC2RoleforSSM
+      RoleName: !Sub ${projectName}-ec2-role
+  iamRole2:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: "Allow"
+            Principal:
+              Service:
+                - "codedeploy.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Path: "/"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSCodeDeployRole
+      RoleName: !Sub ${projectName}-codedeploy-role
+  iamInstanceProfile1:
+    Type: "AWS::IAM::InstanceProfile"
+    Properties:
+      Path: "/"
+      Roles:
+        - !Ref iamRole1
+      InstanceProfileName: !Sub ${projectName}-role
+  vpc:
+    Type: 'AWS::EC2::VPC'
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: 'true'
+      EnableDnsHostnames: 'true'
+      InstanceTenancy: default
+      Tags:
+        - Key: Name
+          Value: !Sub ${projectName}-vpc
+  internetGateway:
+    Type: 'AWS::EC2::InternetGateway'
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub ${projectName}-igw
+  igwAttachVpc:
+    Type: 'AWS::EC2::VPCGatewayAttachment'
+    Properties:
+      InternetGatewayId: !Ref internetGateway
+      VpcId: !Ref vpc
+  publicSubnet1:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref vpc
+      AvailabilityZone: 'ap-northeast-1a'
+      CidrBlock: 10.0.0.0/24
+      MapPublicIpOnLaunch: 'true'
+      Tags:
+        - Key: Name
+          Value: !Sub ${projectName}-public-subnet01
+  publicSubnet2:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref vpc
+      AvailabilityZone: 'ap-northeast-1c'
+      CidrBlock: 10.0.1.0/24
+      MapPublicIpOnLaunch: 'true'
+      Tags:
+        - Key: Name
+          Value: !Sub ${projectName}-public-subnet02
+  publicRouteTable:
+    Type: 'AWS::EC2::RouteTable'
+    Properties:
+      VpcId: !Ref vpc
+      Tags:
+        - Key: Name
+          Value: !Sub ${projectName}-public-rtb
+  routeAddInternet:
+    Type: 'AWS::EC2::Route'
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref internetGateway
+      RouteTableId: !Ref publicRouteTable
+  associatePublicSubnet1ToPublicRouteTable:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      RouteTableId: !Ref publicRouteTable
+      SubnetId: !Ref publicSubnet1
+  associatePublicSubnet2ToPublicRouteTable:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      RouteTableId: !Ref publicRouteTable
+      SubnetId: !Ref publicSubnet2
+  ec2Securitygroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub ${projectName}-ec2-sg
+      GroupDescription: !Sub ${projectName}-ec2-sg
+      Tags:
+        - Key: Name
+          Value: !Sub ${projectName}-ec2-sg
+      VpcId: !Ref vpc
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: '80'
+        ToPort: '80'
+        SourceSecurityGroupId: !Ref albSecuritygroup
+      - IpProtocol: tcp
+        FromPort: '22'
+        ToPort: '22'
+        CidrIp: '0.0.0.0/0'
+  albSecuritygroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub ${projectName}-alb-sg
+      GroupDescription: !Sub ${projectName}-alb-sg
+      Tags:
+        - Key: Name
+          Value: !Sub ${projectName}-alb-sg
+      VpcId: !Ref vpc
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: '80'
+        ToPort: '80'
+        CidrIp: '0.0.0.0/0'
+  frontendTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub ${projectName}-tg
+      Port: 80
+      Protocol: HTTP
+      VpcId: !Ref vpc
+  publicAlb:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub ${projectName}-public-alb
+      Scheme: internet-facing
+      Subnets:
+        - !Ref publicSubnet1
+        - !Ref publicSubnet2
+      Tags:
+        - Key: Name
+          Value: !Sub ${projectName}-public-alb
+      Type: application
+      SecurityGroups: [!Ref albSecuritygroup]
+  publiclistnener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - TargetGroupArn: !Ref frontendTargetGroup
+          Type: forward
+      LoadBalancerArn: !Ref publicAlb
+      Port: 80
+      Protocol: HTTP
+  snsTopic01:
+    Type: "AWS::SNS::Topic"
+    Properties:
+      DisplayName: !Sub ${projectName}-topic
+      TopicName: !Sub ${projectName}-topic
+      Subscription:
+      - Endpoint: !Ref snsSubscription
+        Protocol: email
+  Bucket01:
+    Type: "AWS::S3::Bucket"
+    Properties:
+      BucketName: !Sub ${projectName}-bucket-${AWS::AccountId}
+  launchConfiguration:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      AssociatePublicIpAddress: true
+      IamInstanceProfile: !Ref iamInstanceProfile1
+      ImageId: !Ref launchConfigImageId
+      InstanceMonitoring: false
+      InstanceType: t2.micro
+      KeyName: !Ref eC2KeyPair
+      LaunchConfigurationName: !Sub ${projectName}-lcg
+      SecurityGroups:
+        - !Ref ec2Securitygroup
+  autoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AutoScalingGroupName: !Sub ${projectName}-asg
+      LaunchConfigurationName: !Ref launchConfiguration
+      DesiredCapacity: '2'
+      MaxSize: '2'
+      MinSize: '2'
+      NotificationConfigurations:
+      - TopicARN: 
+          Ref: snsTopic01
+        NotificationTypes:
+        - autoscaling:EC2_INSTANCE_LAUNCH
+        - autoscaling:EC2_INSTANCE_LAUNCH_ERROR
+        - autoscaling:EC2_INSTANCE_TERMINATE
+        - autoscaling:EC2_INSTANCE_TERMINATE_ERROR
+        - autoscaling:TEST_NOTIFICATION
+        TopicARN: !Ref snsTopic01
+      Tags:
+        - Key: Name
+          Value: !Sub ${projectName}-ec2
+          PropagateAtLaunch: 'true'
+      TargetGroupARNs:
+        - !Ref frontendTargetGroup
+      VPCZoneIdentifier:
+        - !Ref publicSubnet1
+        - !Ref publicSubnet2
+  CodeDeployApplication:
+    Type: AWS::CodeDeploy::Application
+    Properties:
+      ApplicationName: !Sub ${projectName}-codedeploy-app
+      ComputePlatform: Server
+
+
+
